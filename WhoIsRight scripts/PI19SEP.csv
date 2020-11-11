@@ -1,0 +1,15 @@
+Target,Foil1,Foil2,SNRcorrection
+bikeObike,bikeMwike,bikePgike,2
+binObin,binMmin,binPgin,3
+busObus,busMwus,busPdus,-4
+dogOdog,dogMnog,dogPgog,2
+dollOdoll,dollMroll,dollPboll,0
+duckOduck,duckMzuck,duckPguck,-4
+laughOlaugh,laughMzaugh,laughPwaugh,-2
+legOleg,legMdeg,legPyeg,-1
+oneOone,oneMmone,onePlone,-3
+rainOrain,rainMnain,rainPyain,0
+seaOsea,seaVzea,seaPthea,-7
+sunOsun,sunVzun,sunPthun,11
+watchOwatch,watchMgatch,watchPratch,-3
+waveOwave,waveMbave,wavePlave,-1
