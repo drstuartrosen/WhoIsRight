@@ -1,0 +1,258 @@
+---
+title:  | 
+    <center>Processing the WiR data</center> 
+
+author: "Stuart Rosen & Sam Evans - to accompany Evans & Rosen (2021) JSLHR"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Five studies are available with relevant data 
+* SC = Cooper 2011 BSc Speech Sciences UCL 
+* RL = Lancaster 2009 IBSc UCL (containing earlier data from Emmbrook study) 
+* GY = control listeners from Guy's study 
+* HR = Roe 2008 BSc Audiology UCL 
+* HW = Williams 2012 BSc Audiology UCL
+* CR = Redey-Nagy 2009 PhD UCL: 19 children
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=FALSE}  
+
+require(plyr)
+require(car)
+require(nlstools)
+require(tidyverse)
+library(cowplot)
+cbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+myPalette <- c("#D55E00", "#E69F00", "#56B4E9", "#009E73",  "#000000", "#F0E442", "#0072B2", "#CC79A7")
+
+
+source("WiRnormingFunctions.R")
+
+d<-read.csv("WiR-20JULY2021.csv",header=T)
+
+```
+
+### Numbers of listeners in each sub-study, and the total
+```{r, echo = FALSE, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+# Total numbers
+d %>%
+  group_by(study) %>%
+  summarise(n = n())
+
+d %>%
+  summarise(n = n())
+
+```
+
+### Here is the essential raw data before any data removals or adjustments
+```{r, echo = FALSE, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+ggplot(d, aes(age, SRT, group=study, color=study)) + geom_point() 
+
+```
+
+
+### Are the studies consistent in the SRTs for children aged 11 and up? (Figure 2 from the paper)
+<font size="4">Given the evidence that SRTs do not appear to change after age 11, we compare SRTs across the 4 studies for those groups of older participants (number in each sub-study given below). Note that HW & CR have no older listeners.</font>
+
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+dCmp <-  d %>%
+  filter(age>=11) %>%
+  droplevels()
+
+dCmp %>%
+  group_by(study) %>%
+  summarise(n = n())
+
+ggplot(dCmp, aes(study, SRT, colour=study)) + geom_boxplot() + geom_point(position = position_jitterdodge(jitter.width = 1)) + xlab("") + theme_half_open() + background_grid() + scale_colour_viridis_d(begin=0.8, end=0)+ theme(legend.title=element_blank())
+
+```
+
+#### A one-way ANOVA with a follow-up Tukey post-hoc test shows that the mean SRTs are not the same in the 4 groups (f (3, 78) = 9.98, p = 1.22e-05).  The SRTs for SC are significantly lower than from RL and GY (both ps < 0.003). SC and HR are not significantly different (p = 0.09) even though the absolute difference in means is very similar to the other two groups, presumably because there are only 5 listeners in the HR group. 
+
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+
+m3 <- lm(SRT ~ study, data = dCmp)
+summary(m3)
+anova(m3)
+
+m3a <- aov(SRT ~ study, data = dCmp)
+summary(m3a)
+TukeyHSD(m3a)
+
+# break studies into to -- SC vs the rest
+dCmp$g2 <- dplyr::recode(dCmp$study, RL = 'RL+GY+HR', GY = 'RL+GY+HR', HR = 'RL+GY+HR')
+dCmp <- relocate(dCmp, g2, study)
+
+dCmpu <- ddply(dCmp, .(g2), summarise, mean=mean(SRT), min=min(SRT), max=max(SRT), n=length(SRT))
+dCmpu
+
+SRTadj <- mean(dCmp$SRT[dCmp$study!="SC"]) - mean(dCmp$SRT[dCmp$study=="SC"]) 
+noquote(paste('Aggregating RL+GY+HR into one group shows a mean difference of ', round(SRTadj,1), ' dB between this group of 3 and SC. ', sep=''))
+
+```
+
+#### As SC only had participants aged 11.6-16.5 years (in secondary school), it seemed undesirable to leave the SRTs as is, because this overall effect on model fits would not be distributed across the age range, particularly for younger children where developmental changes are obvious. Therefore, SRTs for the SC study were all adjusted upwards by 2.7 dB, after which a one-way ANOVA confirmed no differences across the groups (f(3,78) = 0.256, p = 0.857).
+
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+
+# adjust SRTs from the SC study by the difference
+d <- AdjustSC(d)
+
+dCmp <-   d[d$age>=11,]
+ggplot(dCmp, aes(study, SRTx,colour=study)) + geom_boxplot() + geom_point(position = position_jitterdodge(jitter.width = 0.2))
+
+mg4 <- aov(SRTx ~ study, data = dCmp)
+summary(mg4)
+
+```
+
+### Data set after adjustments to SC
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+ggplot(d, aes(age, SRTx, group=study, color=study)) + geom_point() 
+```
+
+### Do an initial segmented regression to delete outlying points, first showing that there is no evidence for the upper segment to have a slope different from 0.
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+# broken stick regression
+TwoLinesFCT <- function(x, slope1, slope2, int1, brk) {
+  (x<=brk)*(slope1 * x + int1) + (x>brk)*(slope2 * x + brk*(slope1-slope2)+int1) 
+}
+# saturated model
+mSAT <- nls(SRTx ~ TwoLinesFCT(age, slope1, slope2, int1, brk),
+                start=list(slope1=-1.4, slope2=0.1, int1=4, brk=10),
+                data=d,
+                trace = FALSE)
+summary(mSAT)
+mASYMP <- nls(SRTx ~ TwoLinesFCT(age, slope1, 0, int1, brk),
+              start=list(slope1=-1, int1=0, brk=10),
+              data=d,
+              trace = FALSE)
+summary(mASYMP)
+
+# slope of upper line ~ 0, p=0.46
+anova(mSAT, mASYMP)
+```
+### Now find points more than 3 standard deviations from the mean, and delete them. Only one point is identified, and after re-fitting, another. Then all remaining points have z-scores within +/- 3 dB
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+zB <- 3
+d <- FitBrokenStickLM(d, zBoundary=zB)
+d <- IdentifyAndFilter(d, zBoundary=zB)
+d <- AdjustSC(d)
+# dplyr::all_equal(d, dx)
+d <- FitBrokenStickLM(d, zBoundary=zB)
+# another round
+d <- IdentifyAndFilter(d, zBoundary=zB)
+d <- AdjustSC(d)
+d <- FitBrokenStickLM(d, zBoundary=zB)
+
+
+```
+
+### Check again, with the final data set that there is no evidence for the upper segment to have a slope different from 0, and also that the broken stick is better than a simple line.
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+# broken stick regression
+# saturated model
+mSAT <- nls(SRTx ~ TwoLinesFCT(age, slope1, slope2, int1, brk),
+                start=list(slope1=-1.4, slope2=0.1, int1=4, brk=10),
+                data=d,
+                trace = FALSE)
+summary(mSAT)
+mASYMP <- nls(SRTx ~ TwoLinesFCT(age, slope1, 0, int1, brk),
+              start=list(slope1=-1, int1=0, brk=10),
+              data=d,
+              trace = FALSE)
+summary(mASYMP)
+
+mLIN <- lm(SRTx ~ age, data=d)
+summary(mLIN)
+
+# slope of upper line ~ 0, p=0.46
+anova(mSAT, mASYMP, mLIN)
+```
+
+### Now fit an asymptotic regression model
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+asympRegrFCT <- function(age, b1, b2, b3) {
+  b1 + b2 * exp(b3 * age)
+}
+mHyp <- nls(SRTx ~ asympRegrFCT(age, b1, b2, b3),
+            start=list(b1=-10, b2=40, b3=-.4),
+            data=d,
+            trace = FALSE)
+summary(mHyp)
+
+Hyp <- function(age) {asympRegrFCT(age, 
+        as.numeric(coefficients(mHyp)[1]), as.numeric(coefficients(mHyp)[2]), as.numeric(coefficients(mHyp)[3]))}
+
+```
+
+
+### Main analysis: Compare the two model fits (Figure 3 from the paper)
+#### The overall fits of the two models were very similar (residual standard errors ~ 2.4 on 150 degrees of freedom, as both models have the same number of estimated parameters). But the broken stick model is more intuitively appealing.  
+
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+# ensure the breakpoint is plotted by adding it to the vector
+mASYMP <- nls(SRTx ~ TwoLinesFCT(age, slope1, 0, int1, brk),
+              start=list(slope1=-1, int1=0, brk=10),
+              data=d,
+              trace = FALSE)
+# summary(mASYMP)
+nAge = sort(c(seq(5, 25, 1),as.numeric(coefficients(mASYMP)[3])))
+nData <- data.frame(age = nAge)
+fitted <- predict(mASYMP, newdata=nData, re.form=NA, type="response")
+
+TwoLines <- function(age) {TwoLinesFCT(age, 
+      as.numeric(coefficients(mASYMP)[1]), 0, as.numeric(coefficients(mASYMP)[2]), as.numeric(coefficients(mASYMP)[3]))}
+# p <- ggplot(d, aes(age, SRTx, group=study, color=study)) + geom_point() 
+# p <- p + stat_function(fun = TwoLines, color="black")
+# p + stat_function(fun = TwoLines, color="black") + stat_function(fun = Hyp, color="black") 
+
+p <- ggplot(d, aes(age, SRTx, group=study, color=study)) + geom_point(size=2) + xlab("age (years)") + ylab("SRT (dB)") + theme_half_open() + theme_half_open()
+p <- p + stat_function(fun = TwoLines, color="black") + theme(legend.title=element_blank())
+p <- p + stat_function(fun = TwoLines, color="black") + stat_function(fun = Hyp, color="black") 
+p <- p + theme(legend.title=element_blank()) + background_grid() + scale_colour_viridis_d()
+p
+
+```
+
+#### The standardised residuals look sufficiently unstructured. Note that the vertical line at left arises because the model predicts the same SRT for everyone over the age of 9.25 years.
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+
+plot(nlsResiduals(mASYMP))
+# summary(m)
+
+```
+
+### Figure 4 from the paper
+#### It could be that the variability in the younger children would be greater than that of the older, making suspect a simple calculation of a standardised residual. However, although the following graph shows a hint of that (in that the youngest children seem to be more dispersed), it essentially looks pretty good:
+
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+
+p <- ggplot(d, aes(x=age, y=Z)) + geom_point(size=2) + geom_hline(yintercept = zB)+ geom_hline(yintercept = -zB)
+p + xlab("age (years)") + ylab("standardised residuals (z-score)") + theme_half_open() + background_grid()
+
+```
+
+#### Although the tails of the empirical distribution may be a little heavy, there is no statistical evidence that the distribution of z scores is not Gaussian
+
+```{r, warning=FALSE, message=FALSE, fig.align="center",fig.height = 5, fig.width = 6,cache=TRUE}  
+# perhaps the distribution is a little heavy in the tails
+bw <- 0.25
+n_obs <- nrow(d)
+ggplot(d, aes(Z))  + 
+  geom_histogram(colour = "black", binwidth = bw) + 
+  stat_function(fun = function(x) 
+    dnorm(x, mean = mean(d$Z), sd = sd(d$Z)) * bw * n_obs)
+
+shapiro.test(d$Z)
+ks.test(d$Z, pnorm)
+```
+
+
+```{r, echo=FALSE}
+knitr::knit_exit()
+```
